@@ -1,0 +1,104 @@
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.*;
+
+public class PortScanner {
+
+    public static void main(String[] args) throws Exception {
+        if (args.length < 1) {
+            System.out.println("Usage: java PortScanner <host> [startPort] [endPort] [timeoutMs] [threads]");
+            System.out.println("Example: java PortScanner 192.168.1.10 1 1024 300 200");
+            return;
+        }
+
+        String host = args[0];
+
+        // Defaults
+        int startPort = 1;
+        int endPort   = 1024;
+        int timeoutMs = 300;  // milliseconds
+        int threads   = 200;
+
+        try {
+            if (args.length >= 2) startPort = Integer.parseInt(args[1]);
+            if (args.length >= 3) endPort   = Integer.parseInt(args[2]);
+            if (args.length >= 4) timeoutMs = Integer.parseInt(args[3]);
+            if (args.length >= 5) threads   = Integer.parseInt(args[4]);
+        } catch (NumberFormatException nfe) {
+            System.err.println("Error: startPort, endPort, timeoutMs and threads must be integers.");
+            return;
+        }
+
+
+        startPort = Math.max(1, Math.min(65535, startPort));
+        endPort   = Math.max(1, Math.min(65535, endPort));
+        if (startPort > endPort) { int t = startPort; startPort = endPort; endPort = t; }
+
+        if (timeoutMs < 1) timeoutMs = 300;
+        if (threads < 1) threads = 1;
+        final int MAX_THREADS = 2000;
+        if (threads > MAX_THREADS) threads = MAX_THREADS;
+
+        System.out.printf("Scanning %s ports %d-%d (timeout=%dms, threads=%d)%n",
+                host, startPort, endPort, timeoutMs, threads);
+
+        Instant t0 = Instant.now();
+
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        List<Future<Integer>> futures = new ArrayList<>();
+
+        final int timeout = timeoutMs;  // make a final copy
+
+        for (int port = startPort; port <= endPort; port++) {
+            final int p = port;
+            Callable<Integer> task = () -> {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(host, p), timeout);
+                    return p; // port is open
+                } catch (Exception ex) {
+                    return -1; // closed
+                }
+            };
+            futures.add(pool.submit(task));
+        }
+
+        List<Integer> openPorts = new ArrayList<>();
+        for (Future<Integer> f : futures) {
+            try {
+                Integer result = f.get();
+                if (result != null && result > 0) openPorts.add(result);
+            } catch (ExecutionException ee) {
+            } catch (InterruptedException ie) {
+
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        pool.shutdown();
+        try {
+            if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException ie) {
+            pool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+
+        Instant t1 = Instant.now();//Records the end time of the scan.
+
+        if (openPorts.isEmpty()) {
+            System.out.println("No open TCP ports found in the scanned range.");
+        } else {
+            openPorts.sort(Integer::compareTo);//sorts the port in ascending order and prints each one nicely.
+            System.out.println("Open TCP ports:");
+            for (int p : openPorts) System.out.println("  - " + p);
+        }
+
+        System.out.printf("Scan completed in %d ms%n", Duration.between(t0, t1).toMillis());
+    }
+}
